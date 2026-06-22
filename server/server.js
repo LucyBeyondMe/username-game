@@ -1,11 +1,39 @@
 // server.js
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { WebSocketServer } = require('ws');
 const { Store } = require('./store');
 
 const PORT = process.env.PORT || 8080;
 const store = new Store();
 
-const wss = new WebSocketServer({ port: PORT });
+// Serve the client as a normal webpage. We read the file fresh on each
+// request rather than caching it in memory, so updates to client/index.html
+// show up on the next deploy without needing a server restart logic change.
+const CLIENT_PATH = path.join(__dirname, '..', 'client', 'index.html');
+
+const httpServer = http.createServer((req, res) => {
+  if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
+    fs.readFile(CLIENT_PATH, 'utf8', (err, html) => {
+      if (err) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Could not load client.');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(html);
+    });
+    return;
+  }
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('Not found');
+});
+
+// Attach the WebSocket server to the SAME http server/port, rather than
+// opening a second one. Render only exposes a single PORT publicly, so
+// both the webpage and the game connection need to share it.
+const wss = new WebSocketServer({ server: httpServer });
 
 function send(ws, type, payload) {
   ws.send(JSON.stringify({ type, ...payload }));
@@ -91,4 +119,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-console.log(`Username game server listening on ws://localhost:${PORT}`);
+httpServer.listen(PORT, () => {
+  console.log(`Username game serving page + websocket on port ${PORT}`);
+});

@@ -111,13 +111,13 @@
 </div>
 
 <script>
-// Auto-detect: if this page is served over the network, assume the
-// WebSocket server is reachable at the same host on port 8080. If you
-// deploy the server somewhere else, just hardcode its wss:// URL here.
+// Since this page is now served BY the same server that runs the game,
+// we can safely auto-detect: same hostname, no separate port (Render
+// and most hosts route everything through one public port already).
 const WS_URL = (() => {
-  if (location.protocol === "file:") return "ws://localhost:8080";
+  if (location.protocol === "file:") return "ws://localhost:8080"; // local file testing only
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${location.hostname}:8080`;
+  return `${proto}//${location.host}`;
 })();
 
 let ws;
