@@ -19,7 +19,10 @@ const { randomUUID } = require('crypto');
 const path = require('path');
 
 const USERNAME_PATTERN = /^[A-Za-z0-9]{3,15}$/;
-const DB_PATH = path.join(__dirname, 'game.db');
+// In production (Render), DB_PATH points at the persistent disk mount
+// (e.g. /data/game.db) so data survives redeploys. Locally, it defaults
+// to a file right next to this script.
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'game.db');
 
 class Store {
   constructor(dbPath = DB_PATH) {
