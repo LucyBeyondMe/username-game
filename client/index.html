@@ -75,6 +75,23 @@
   }
   .empty { color: var(--dim); font-size: 0.85rem; font-style: italic; }
   .hint { font-size: 0.75rem; color: var(--dim); margin-top: 0.4rem; }
+  .tabs { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+  .tab {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    padding: 0.4rem 0.8rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .tab.active { background: var(--accent); color: #0f1115; border-color: var(--accent); font-weight: 600; }
+  .authForm { display: none; flex-direction: column; gap: 0.5rem; }
+  .authForm.active { display: flex; }
+  .authForm input { width: 100%; }
+  .accountInfo { font-size: 0.85rem; color: var(--good); }
+  .linkRow { font-size: 0.8rem; color: var(--dim); margin-top: 0.5rem; }
+  .linkRow a { color: var(--accent); cursor: pointer; text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -85,6 +102,40 @@
   <div class="panel">
     <div class="id-row">Status: <b id="connStatus">connecting…</b></div>
     <div class="id-row">Player ID: <b id="playerId">—</b></div>
+  </div>
+
+  <div class="panel" id="accountPanel">
+    <div id="accountLoggedOut">
+      <div class="tabs">
+        <button class="tab active" id="tabLogin">Log in</button>
+        <button class="tab" id="tabSignup">Sign up</button>
+      </div>
+
+      <form id="loginForm" class="authForm active">
+        <input type="text" id="loginNameInput" placeholder="Login name" autocomplete="username" />
+        <input type="password" id="loginPasswordInput" placeholder="Password" autocomplete="current-password" />
+        <button type="submit">Log in</button>
+      </form>
+
+      <form id="signupForm" class="authForm">
+        <input type="text" id="signupNameInput" placeholder="Choose a login name" autocomplete="username" />
+        <input type="password" id="signupPasswordInput" placeholder="Choose a password (8+ chars)" autocomplete="new-password" />
+        <button type="submit">Sign up</button>
+      </form>
+
+      <div id="authFeedback" class="feedback"></div>
+      <div class="linkRow">Playing without an account? <a id="showLinkForm">Save this session to an account</a></div>
+
+      <form id="linkForm" class="authForm">
+        <input type="text" id="linkNameInput" placeholder="Choose a login name" autocomplete="username" />
+        <input type="password" id="linkPasswordInput" placeholder="Choose a password (8+ chars)" autocomplete="new-password" />
+        <button type="submit">Save my current progress to this account</button>
+      </form>
+    </div>
+
+    <div id="accountLoggedIn" style="display: none;">
+      <div class="accountInfo">Logged in as <b id="loggedInName"></b></div>
+    </div>
   </div>
 
   <div class="panel">
@@ -122,6 +173,21 @@ const WS_URL = (() => {
 
 let ws;
 let token = localStorage.getItem("usernamegame_token") || null;
+let loggedInName = localStorage.getItem("usernamegame_loginname") || null;
+
+function setAccountUI() {
+  const loggedOut = document.getElementById("accountLoggedOut");
+  const loggedIn = document.getElementById("accountLoggedIn");
+  if (loggedInName) {
+    loggedOut.style.display = "none";
+    loggedIn.style.display = "block";
+    document.getElementById("loggedInName").textContent = loggedInName;
+  } else {
+    loggedOut.style.display = "block";
+    loggedIn.style.display = "none";
+  }
+}
+setAccountUI();
 
 function setStatus(text, isError) {
   const el = document.getElementById("connStatus");
@@ -209,6 +275,57 @@ function handleMessage(msg) {
   if (msg.type === "error") {
     console.error("Server error:", msg.reason);
   }
+
+  if (msg.type === "signup_result" || msg.type === "login_result") {
+    const fb = document.getElementById("authFeedback");
+    if (msg.success) {
+      token = msg.token;
+      localStorage.setItem("usernamegame_token", token);
+      // Login name isn't echoed back by the server message itself, so
+      // pull it from whichever form was just submitted.
+      const nameInput = msg.type === "signup_result"
+        ? document.getElementById("signupNameInput")
+        : document.getElementById("loginNameInput");
+      loggedInName = nameInput.value.trim();
+      localStorage.setItem("usernamegame_loginname", loggedInName);
+      setAccountUI();
+      document.getElementById("playerId").textContent = msg.playerId;
+      renderCollection(msg.collection);
+      ws.send(JSON.stringify({ type: "get_stats" }));
+      fb.textContent = "";
+    } else {
+      const reasons = {
+        LOGIN_NAME_TAKEN: "That login name is already taken.",
+        INVALID_LOGIN_NAME: "Login name must be 3-20 letters, numbers, or underscores.",
+        PASSWORD_TOO_SHORT: "Password must be at least 8 characters.",
+        PASSWORD_TOO_LONG: "Password is too long.",
+        INVALID_CREDENTIALS: "Incorrect login name or password.",
+      };
+      fb.textContent = reasons[msg.reason] || `Failed: ${msg.reason}`;
+      fb.className = "feedback fail";
+    }
+    return;
+  }
+
+  if (msg.type === "attach_account_result") {
+    const fb = document.getElementById("authFeedback");
+    if (msg.success) {
+      const name = document.getElementById("linkNameInput").value.trim();
+      loggedInName = name;
+      localStorage.setItem("usernamegame_loginname", loggedInName);
+      setAccountUI();
+      fb.textContent = "";
+    } else {
+      const reasons = {
+        LOGIN_NAME_TAKEN: "That login name is already taken.",
+        INVALID_LOGIN_NAME: "Login name must be 3-20 letters, numbers, or underscores.",
+        PASSWORD_TOO_SHORT: "Password must be at least 8 characters.",
+      };
+      fb.textContent = reasons[msg.reason] || `Failed: ${msg.reason}`;
+      fb.className = "feedback fail";
+    }
+    return;
+  }
 }
 
 function renderCollection(collection) {
@@ -234,6 +351,55 @@ document.getElementById("claimForm").addEventListener("submit", (e) => {
   const value = input.value.trim();
   if (!value) return;
   ws.send(JSON.stringify({ type: "claim_username", value }));
+});
+
+// --- Account tabs ---
+const tabLogin = document.getElementById("tabLogin");
+const tabSignup = document.getElementById("tabSignup");
+const loginForm = document.getElementById("loginForm");
+const signupForm = document.getElementById("signupForm");
+const linkForm = document.getElementById("linkForm");
+
+function showTab(which) {
+  tabLogin.classList.toggle("active", which === "login");
+  tabSignup.classList.toggle("active", which === "signup");
+  loginForm.classList.toggle("active", which === "login");
+  signupForm.classList.toggle("active", which === "signup");
+  linkForm.classList.remove("active");
+  document.getElementById("authFeedback").textContent = "";
+}
+tabLogin.addEventListener("click", () => showTab("login"));
+tabSignup.addEventListener("click", () => showTab("signup"));
+
+document.getElementById("showLinkForm").addEventListener("click", () => {
+  loginForm.classList.remove("active");
+  signupForm.classList.remove("active");
+  linkForm.classList.add("active");
+  document.getElementById("authFeedback").textContent = "";
+});
+
+loginForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const loginName = document.getElementById("loginNameInput").value.trim();
+  const password = document.getElementById("loginPasswordInput").value;
+  if (!loginName || !password) return;
+  ws.send(JSON.stringify({ type: "login", loginName, password }));
+});
+
+signupForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const loginName = document.getElementById("signupNameInput").value.trim();
+  const password = document.getElementById("signupPasswordInput").value;
+  if (!loginName || !password) return;
+  ws.send(JSON.stringify({ type: "signup", loginName, password }));
+});
+
+linkForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const loginName = document.getElementById("linkNameInput").value.trim();
+  const password = document.getElementById("linkPasswordInput").value;
+  if (!loginName || !password) return;
+  ws.send(JSON.stringify({ type: "attach_account", loginName, password }));
 });
 
 connect();

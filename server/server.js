@@ -82,6 +82,50 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (type === 'signup') {
+      const result = store.signup(msg.loginName, msg.password);
+      if (!result.success) {
+        send(ws, 'signup_result', { success: false, reason: result.reason });
+        return;
+      }
+      player = result.player;
+      send(ws, 'signup_result', {
+        success: true,
+        playerId: player.id,
+        token: result.token,
+        collection: [],
+      });
+      return;
+    }
+
+    if (type === 'login') {
+      const result = store.login(msg.loginName, msg.password);
+      if (!result.success) {
+        send(ws, 'login_result', { success: false, reason: result.reason });
+        return;
+      }
+      player = result.player;
+      send(ws, 'login_result', {
+        success: true,
+        playerId: player.id,
+        token: result.token,
+        collection: store.getCollection(player.id),
+      });
+      return;
+    }
+
+    // Attaches login credentials to the CURRENT anonymous session, so an
+    // existing collection (built up before signing up) isn't lost.
+    if (type === 'attach_account') {
+      if (!player) {
+        send(ws, 'attach_account_result', { success: false, reason: 'NOT_IDENTIFIED' });
+        return;
+      }
+      const result = store.attachAccountToPlayer(player.id, msg.loginName, msg.password);
+      send(ws, 'attach_account_result', { success: result.success, reason: result.reason || null });
+      return;
+    }
+
     // Everything below requires an established identity.
     if (!player) {
       send(ws, 'error', { reason: 'NOT_IDENTIFIED' });

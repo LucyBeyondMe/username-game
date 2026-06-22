@@ -17,6 +17,7 @@
 const { DatabaseSync } = require('node:sqlite');
 const { randomUUID } = require('crypto');
 const path = require('path');
+const { hashPassword, verifyPassword, validateLoginName, validatePassword } = require('./auth');
 
 const USERNAME_PATTERN = /^[A-Za-z0-9]{3,15}$/;
 // In production (Render), DB_PATH points at the persistent disk mount
@@ -51,6 +52,32 @@ class Store {
 
       CREATE INDEX IF NOT EXISTS idx_usernames_owner ON usernames(owner_id);
     `);
+    this._migrateAddAccountColumns();
+  }
+
+  /**
+   * Older databases (created before account support existed) won't have
+   * login_name/password_hash columns. SQLite's ALTER TABLE ADD COLUMN is
+   * safe to run repeatedly if we check first — this lets existing
+   * deployments (with existing claimed usernames) gain account support
+   * without losing any data.
+   */
+  _migrateAddAccountColumns() {
+    const columns = this.db.prepare("PRAGMA table_info(players)").all();
+    const columnNames = columns.map((c) => c.name);
+
+    if (!columnNames.includes('login_name')) {
+      this.db.exec('ALTER TABLE players ADD COLUMN login_name TEXT');
+    }
+    if (!columnNames.includes('password_hash')) {
+      this.db.exec('ALTER TABLE players ADD COLUMN password_hash TEXT');
+    }
+    // Enforce uniqueness on login_name via a separate unique index rather
+    // than a table-level constraint, since SQLite can't add a UNIQUE
+    // constraint to an existing column with ALTER TABLE directly.
+    this.db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_players_login_name ON players(login_name)'
+    );
   }
 
   _prepareStatements() {
@@ -73,6 +100,13 @@ class Store {
       `),
       countCollection: this.db.prepare('SELECT COUNT(*) as n FROM usernames WHERE owner_id = ?'),
       countAll: this.db.prepare('SELECT COUNT(*) as n FROM usernames'),
+      setAccountCredentials: this.db.prepare(
+        'UPDATE players SET login_name = ?, password_hash = ? WHERE id = ?'
+      ),
+      getPlayerByLoginName: this.db.prepare(
+        'SELECT id, created_at as createdAt, login_name as loginName, password_hash as passwordHash FROM players WHERE login_name = ?'
+      ),
+      loginNameTaken: this.db.prepare('SELECT 1 FROM players WHERE login_name = ?'),
     };
   }
 
@@ -90,6 +124,88 @@ class Store {
   getPlayerByToken(token) {
     const row = this.stmts.getPlayerByToken.get(token);
     return row || null;
+  }
+
+  // ---- Accounts (login name + password) ----
+
+  /**
+   * Create a brand-new account (not linked to any existing anonymous
+   * play history). Returns { success, player?, token?, reason? }.
+   */
+  signup(loginName, password) {
+    const nameError = validateLoginName(loginName);
+    if (nameError) return { success: false, reason: nameError };
+
+    const passwordError = validatePassword(password);
+    if (passwordError) return { success: false, reason: passwordError };
+
+    if (this.stmts.loginNameTaken.get(loginName)) {
+      return { success: false, reason: 'LOGIN_NAME_TAKEN' };
+    }
+
+    const { player, token } = this.createPlayer();
+    const passwordHash = hashPassword(password);
+
+    try {
+      this.stmts.setAccountCredentials.run(loginName, passwordHash, player.id);
+    } catch (err) {
+      if (String(err.message).includes('UNIQUE constraint failed')) {
+        return { success: false, reason: 'LOGIN_NAME_TAKEN' };
+      }
+      throw err;
+    }
+
+    return { success: true, player, token };
+  }
+
+  /**
+   * Attach a login name + password to an ALREADY EXISTING player (e.g.
+   * an anonymous session that claimed usernames before signing up), so
+   * that play history is preserved rather than starting over.
+   */
+  attachAccountToPlayer(playerId, loginName, password) {
+    const nameError = validateLoginName(loginName);
+    if (nameError) return { success: false, reason: nameError };
+
+    const passwordError = validatePassword(password);
+    if (passwordError) return { success: false, reason: passwordError };
+
+    if (!this.stmts.playerExists.get(playerId)) {
+      return { success: false, reason: 'UNKNOWN_PLAYER' };
+    }
+
+    const passwordHash = hashPassword(password);
+    try {
+      this.stmts.setAccountCredentials.run(loginName, passwordHash, playerId);
+    } catch (err) {
+      if (String(err.message).includes('UNIQUE constraint failed')) {
+        return { success: false, reason: 'LOGIN_NAME_TAKEN' };
+      }
+      throw err;
+    }
+    return { success: true };
+  }
+
+  /**
+   * Verify credentials and, if correct, issue a fresh session token for
+   * that player. Returns { success, player?, token?, reason? }.
+   */
+  login(loginName, password) {
+    const row = this.stmts.getPlayerByLoginName.get(loginName);
+    if (!row || !row.passwordHash) {
+      return { success: false, reason: 'INVALID_CREDENTIALS' };
+    }
+    if (!verifyPassword(password, row.passwordHash)) {
+      return { success: false, reason: 'INVALID_CREDENTIALS' };
+    }
+
+    const token = randomUUID();
+    this.stmts.insertToken.run(token, row.id);
+    return {
+      success: true,
+      player: { id: row.id, createdAt: row.createdAt },
+      token,
+    };
   }
 
   // ---- Username claiming (the hot path) ----
