@@ -1,0 +1,13 @@
+{
+  "name": "username-game",
+  "version": "0.1.0",
+  "description": "Speedrun-to-claim, collect-everything username game prototype",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js"
+  },
+  "dependencies": {
+    "uuid": "^11.1.0",
+    "ws": "^8.18.3"
+  }
+}
